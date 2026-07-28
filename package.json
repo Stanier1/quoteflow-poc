@@ -1,0 +1,16 @@
+{
+  "name": "quote-poc",
+  "version": "1.0.0",
+  "description": "Multi-company web quotation system - proof of concept",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "seed": "node seed.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2"
+  },
+  "engines": {
+    "node": ">=22.5.0"
+  }
+}
