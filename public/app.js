@@ -1,426 +1,901 @@
-// app.js - tiny client-side router + views. No build step, no framework.
-const el = document.getElementById('app');
-const nav = document.getElementById('navActions');
-document.getElementById('brandHome').onclick = () => go('companies');
+/* QuoteFlow front end — vanilla JS, no build step.
+   Layout is responsive via CSS media queries; this file only records which
+   kind of device a quote was raised on (for the audit trail). */
 
-let state = { view: 'companies', companyId: null, quoteId: null };
+const NBSP = '\u202F';
+const state = {
+  companies: [], quotes: [], next: {},
+  companyId: null, screen: 'quotes', openId: null,
+  reservation: null,
+  draft: { client: '', contact: '', notes: '', items: [{ desc: '', qty: '1', rate: '0' }] },
+  newCompanyDraft: null,
+  companyLogoEdits: {},
+  editingCompanyId: null,
+  deleteConfirm: null, // { id, secondsLeft, text }
+  user: null,
+  auditLog: []
+};
+let deleteCountdownTimer = null;
 
-// Each browser tab gets its own "device" label (sessionStorage, not shared) so you can
-// open two tabs / an incognito window and demo "office PC" vs "phone off-site" creating
-// quotes back-to-back against the same shared counter.
-if (!sessionStorage.getItem('deviceLabel')) {
-  const labels = ['Office Desktop', 'Front Desk PC', 'Warehouse Tablet'];
-  sessionStorage.setItem('deviceLabel', labels[Math.floor(Math.random() * labels.length)]);
+const isAdmin = () => !!state.user && state.user.role === 'admin';
+
+function freshCompanyDraft() {
+  return {
+    name: '', short: '', initials: '', tagline: '', prefix: '', pad: 4,
+    currency: '$', vatRate: 15, validDays: 30, address: '', vatNo: '', regNo: '',
+    banking: '', terms: '', footer: '', layout: 'band', logoDataUrl: null
+  };
 }
 
-function escapeHtml(s) {
-  return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const el = id => document.getElementById(id);
+const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+function isMobileDevice() {
+  return window.matchMedia('(max-width: 719px)').matches ||
+    (navigator.maxTouchPoints > 1 && window.matchMedia('(pointer: coarse)').matches);
 }
-function money(n, currency) {
-  const v = Number(n || 0);
-  return `${currency ? currency + ' ' : ''}${v.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}`;
+
+function company(id = state.companyId) { return state.companies.find(c => c.id === id); }
+
+function money(n, co = company()) {
+  const v = (Math.round((Number(n) || 0) * 100) / 100).toFixed(2);
+  const [i, d] = v.split('.');
+  return (co ? co.currency : '$') + ' ' + i.replace(/\B(?=(\d{3})+(?!\d))/g, NBSP) + '.' + d;
 }
-async function api(path, opts) {
-  const res = await fetch(path, {
-    headers: { 'Content-Type': 'application/json' },
-    ...opts
+
+function quoteTotals(q) {
+  const sub = (q.items || []).reduce((a, it) => a + (Number(it.qty) || 0) * (Number(it.rate) || 0), 0);
+  const rate = Number(q.vatRate) || 0;
+  return { sub, vat: sub * rate / 100, grand: sub * (1 + rate / 100), rate };
+}
+
+function fmtDate(iso) {
+  return new Date(iso).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
+}
+
+function addDays(iso, days) {
+  const d = new Date(iso); d.setDate(d.getDate() + Number(days || 30));
+  return d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
+}
+
+/* ------------------------------------------------------------------- api */
+
+async function api(method, url, body) {
+  const res = await fetch(url, {
+    method,
+    headers: body ? { 'Content-Type': 'application/json' } : undefined,
+    body: body ? JSON.stringify(body) : undefined
   });
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({}));
-    throw new Error(body.error || `Request failed (${res.status})`);
-  }
+  if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || res.statusText);
   if (res.status === 204) return null;
   return res.json();
 }
 
-function go(view, params = {}) {
-  state = { view, companyId: null, quoteId: null, ...params };
+async function bootstrap() {
+  const data = await api('GET', '/api/bootstrap');
+  state.companies = data.companies;
+  state.quotes = data.quotes;
+  state.next = data.next;
+  if (!company() || company().active === false) {
+    const firstActive = state.companies.find(c => c.active !== false);
+    state.companyId = firstActive ? firstActive.id : (state.companies[0] && state.companies[0].id);
+  }
+  renderChrome();
   render();
 }
 
-function renderNav() {
-  const device = sessionStorage.getItem('deviceLabel');
-  nav.innerHTML = `
-    <span class="tag" style="margin-right:6px">This tab is acting as:</span>
-    <select id="deviceSelect" style="width:auto; margin:0; padding:8px 10px; font-size:12px;">
-      ${['Office Desktop','Front Desk PC','Warehouse Tablet','Mobile — Off Site','Mobile — Client Visit','Sales Rep Laptop']
-        .map(l => `<option value="${escapeHtml(l)}" ${l === device ? 'selected' : ''}>${escapeHtml(l)}</option>`).join('')}
-    </select>
-  `;
-  document.getElementById('deviceSelect').onchange = (e) => {
-    sessionStorage.setItem('deviceLabel', e.target.value);
-  };
+async function reserveNumber() {
+  const r = await api('POST', '/api/reserve', { companyId: state.companyId, device: isMobileDevice() ? 'mobile' : 'desktop' });
+  state.reservation = r;
+  state.next[state.companyId] = r.number;
 }
 
-async function render() {
-  renderNav();
-  el.innerHTML = `<p class="tag">Loading…</p>`;
-  try {
-    if (state.view === 'companies') return renderCompanies();
-    if (state.view === 'company-form') return renderCompanyForm(state.companyId);
-    if (state.view === 'dashboard') return renderDashboard(state.companyId);
-    if (state.view === 'quote-form') return renderQuoteForm(state.companyId);
-    if (state.view === 'quote-view') return renderQuoteView(state.quoteId);
-  } catch (err) {
-    el.innerHTML = `<div class="panel"><p style="color:#ef4444">${escapeHtml(err.message)}</p></div>`;
+async function releaseNumber() {
+  if (!state.reservation) return;
+  const token = state.reservation.token;
+  state.reservation = null;
+  await api('POST', '/api/release', { token }).catch(() => {});
+  const data = await api('GET', '/api/bootstrap');
+  state.next = data.next;
+}
+
+/* ----------------------------------------------------------------- chrome */
+
+// Company management and the audit trail are admin-only screens. Staff's
+// nav is deliberately just Quotes (view + toggle status) and New (create) —
+// company data (banking, VAT, addresses, logos) never renders for them
+// outside of a quote they're actively working with.
+const NAV = [
+  { key: 'quotes', label: 'Quotes', icon: '📄' },
+  { key: 'new', label: 'New', icon: '✚' },
+  { key: 'companies', label: 'Companies', icon: '🏢', roles: ['admin'] },
+  { key: 'activity', label: 'Activity', icon: '🕑', roles: ['admin'] }
+];
+const GATED_SCREENS = { companies: 'admin', 'company-new': 'admin', 'company-detail': 'admin', activity: 'admin' };
+const visibleNav = () => NAV.filter(n => !n.roles || (state.user && n.roles.includes(state.user.role)));
+
+function renderChrome() {
+  const activeCompanies = state.companies.filter(c => c.active !== false);
+  const opts = activeCompanies.map(c =>
+    `<option value="${c.id}" ${c.id === state.companyId ? 'selected' : ''}>${esc(c.short)}</option>`).join('');
+  ['companyPicker', 'companyPickerMobile'].forEach(id => { el(id).innerHTML = opts; });
+
+  const nav = visibleNav();
+  el('sidenav').innerHTML = nav.map(n =>
+    `<button class="navitem ${isActive(n.key) ? 'active' : ''}" data-go="${n.key}">
+       <span class="ico">${n.icon}</span><span>${n.label}</span>
+     </button>`).join('');
+
+  el('tabbar').innerHTML = nav.map(n =>
+    `<button class="tab ${isActive(n.key) ? 'active' : ''}" data-go="${n.key}">
+       <span>${n.icon}</span><span>${n.label}</span>
+     </button>`).join('');
+
+  const co = company();
+  el('topCompany').textContent = co ? co.name : '';
+  el('topTitle').textContent = {
+    quotes: 'Quotes', new: 'New quotation', quote: 'Quotation',
+    companies: 'Companies & branding', 'company-new': 'Add a company',
+    'company-detail': 'Company details', activity: 'Audit trail'
+  }[state.screen];
+  el('nextPill').innerHTML = `<span class="dot"></span>Next: ${esc(state.next[state.companyId] || '—')}`;
+
+  if (el('userCard') && state.user) {
+    el('userCard').innerHTML = `
+      <div style="font-size:13px;font-weight:700;color:var(--black)">${esc(state.user.name || state.user.email)}</div>
+      <div class="stat-sub" style="text-transform:capitalize">${esc(state.user.role)} access</div>`;
   }
 }
 
-// ---------------- Companies list ----------------
-async function renderCompanies() {
-  const companies = await api('/api/companies');
-  el.innerHTML = `
-    <div class="tag">Proof of concept</div>
-    <h1 class="hero-line serif">Your Companies.<br/>One Shared System.</h1>
-    <p class="hero-sub">Each company below has its own logo, address, banking details and quote numbering sequence — all served from one system, accessible from any device.</p>
-    <div class="company-grid" id="grid"></div>
-  `;
-  const grid = document.getElementById('grid');
-  grid.innerHTML = companies.map(c => `
-    <div class="company-card" data-id="${c.id}">
-      <div class="accent-bar" style="background:${c.accent_color}"></div>
-      <h3>${escapeHtml(c.name)}</h3>
-      <div class="meta">${escapeHtml(c.email || '')}${c.email && c.phone ? ' · ' : ''}${escapeHtml(c.phone || '')}</div>
-      <div class="meta">${escapeHtml(c.address || 'No address set')}</div>
-      <span class="seq-pill">Next quote: ${c.quote_prefix}-${String(c.next_quote_seq + 1).padStart(4,'0')}</span>
-    </div>
-  `).join('') + `<div class="company-card add-new" id="addCompany">+ Add a company</div>`;
+const isActive = key => state.screen === key || (key === 'quotes' && state.screen === 'quote') ||
+  (key === 'companies' && (state.screen === 'company-new' || state.screen === 'company-detail'));
 
-  grid.querySelectorAll('.company-card[data-id]').forEach(card => {
-    card.onclick = () => go('dashboard', { companyId: Number(card.dataset.id) });
-  });
-  document.getElementById('addCompany').onclick = () => go('company-form');
+async function go(screen) {
+  const requiredRole = GATED_SCREENS[screen];
+  if (requiredRole && (!state.user || state.user.role !== requiredRole)) {
+    toast(`${requiredRole[0].toUpperCase()}${requiredRole.slice(1)} access is required`);
+    return;
+  }
+  if (state.screen === 'new' && screen !== 'new') await releaseNumber();
+  if (state.deleteConfirm) { clearInterval(deleteCountdownTimer); state.deleteConfirm = null; }
+  state.screen = screen;
+  if (screen === 'new') await reserveNumber();
+  if (screen === 'company-new') state.newCompanyDraft = freshCompanyDraft();
+  if (screen === 'activity') state.auditLog = await api('GET', '/api/audit').catch(() => state.auditLog || []);
+  renderChrome();
+  render();
+  window.scrollTo(0, 0);
 }
 
-// ---------------- Company create/edit form ----------------
-async function renderCompanyForm(companyId) {
-  const company = companyId ? await api(`/api/companies/${companyId}`) : null;
-  el.innerHTML = `
-    <div class="tag">${company ? 'Edit company' : 'New company'}</div>
-    <h2 class="serif" style="font-size:26px">${company ? escapeHtml(company.name) : 'Set up a new company'}</h2>
-    <div class="panel">
-      <h2>Business details</h2>
-      <div class="form-grid">
-        <div><label>Company name *</label><input id="f_name" value="${escapeHtml(company?.name || '')}" placeholder="Acme Electrical Services"></div>
-        <div><label>Quote prefix</label><input id="f_prefix" value="${escapeHtml(company?.quote_prefix || '')}" placeholder="ACM"></div>
-        <div><label>Email</label><input id="f_email" value="${escapeHtml(company?.email || '')}"></div>
-        <div><label>Phone</label><input id="f_phone" value="${escapeHtml(company?.phone || '')}"></div>
-        <div><label>Website</label><input id="f_website" value="${escapeHtml(company?.website || '')}"></div>
-        <div><label>Currency</label><input id="f_currency" value="${escapeHtml(company?.currency || 'USD')}"></div>
-        <div><label>Default tax rate (%)</label><input id="f_tax" type="number" step="0.01" value="${company?.default_tax_rate ?? 0}"></div>
-        <div><label>Brand / accent colour</label><input id="f_color" type="color" value="${company?.accent_color || '#8B5CF6'}"></div>
-      </div>
-      <label>Address</label><textarea id="f_address" rows="2">${escapeHtml(company?.address || '')}</textarea>
+function toast(msg) {
+  const t = el('toast');
+  t.textContent = msg; t.hidden = false;
+  clearTimeout(toast._t);
+  toast._t = setTimeout(() => { t.hidden = true; }, 4500);
+}
 
-      <label>Logo</label>
-      <div class="logo-drop" id="logoDrop">Click to upload a logo (PNG/JPG, shown on quotes &amp; PDFs)</div>
-      <input type="file" id="logoFile" accept="image/*" style="display:none">
-      ${company?.logo_data_url ? `<img class="logo-preview" id="logoPreview" src="${company.logo_data_url}">` : `<img class="logo-preview hidden" id="logoPreview">`}
+/* ---------------------------------------------------------------- screens */
 
-      <h2 style="margin-top:24px">Banking details <span class="tag">(printed on quotes)</span></h2>
-      <div class="form-grid">
-        <div><label>Bank name</label><input id="f_bank_name" value="${escapeHtml(company?.bank_name || '')}"></div>
-        <div><label>Account name</label><input id="f_bank_acc_name" value="${escapeHtml(company?.bank_account_name || '')}"></div>
-        <div><label>Account number</label><input id="f_bank_acc_num" value="${escapeHtml(company?.bank_account_number || '')}"></div>
-        <div><label>Branch</label><input id="f_bank_branch" value="${escapeHtml(company?.bank_branch || '')}"></div>
-        <div><label>SWIFT / routing</label><input id="f_bank_swift" value="${escapeHtml(company?.bank_swift || '')}"></div>
-      </div>
+function render() {
+  const views = {
+    quotes: viewQuotes, new: viewNew, quote: viewQuote,
+    companies: viewCompanies, 'company-new': viewCompanyNew, 'company-detail': viewCompanyDetail,
+    activity: viewActivity
+  };
+  el('content').innerHTML = views[state.screen]();
+  el('content').style.animation = 'none'; void el('content').offsetWidth; el('content').style.animation = '';
+}
 
-      <div style="display:flex; gap:10px; margin-top:10px; flex-wrap:wrap">
-        <button class="btn solid" id="saveCompany">${company ? 'Save changes' : 'Create company'}</button>
-        <button class="btn ghost" id="cancelCompany">Cancel</button>
-        ${company ? `<button class="btn danger" id="deleteCompany" style="margin-left:auto">Delete company</button>` : ''}
+function viewQuotes() {
+  const co = company();
+  const mine = state.quotes.filter(q => q.companyId === co.id).sort((a, b) => b.n - a.n);
+  const value = mine.reduce((a, q) => a + quoteTotals(q).grand, 0);
+  const mobileCount = mine.filter(q => q.device === 'mobile').length;
+
+  const stats = [
+    ['Quotes issued', String(mine.length), 'this company, all devices'],
+    ['Next number', state.next[co.id] || '—', 'server-issued, no gaps'],
+    ['Pipeline value', money(value), 'incl. VAT'],
+    ['From mobile', `${mobileCount}/${mine.length}`, 'raised off-site']
+  ].map(([l, v, s]) => `<div class="card stat"><div class="eyebrow">${l}</div><div class="stat-value">${esc(v)}</div><div class="stat-sub">${s}</div></div>`).join('');
+
+  const rows = mine.length ? mine.map(q => {
+    const t = quoteTotals(q);
+    return `<button class="quote-row" data-open="${q.id}">
+      <span class="quote-row-main">
+        <span class="row" style="gap:8px">
+          <span class="quote-no">${esc(q.number)}</span>
+          <span class="badge ${q.status.toLowerCase()}">${esc(q.status)}</span>
+        </span>
+        <span class="quote-client">${esc(q.client)}</span>
+      </span>
+      <span class="quote-row-side">
+        <span class="quote-total">${money(t.grand)}</span>
+        <span class="quote-meta">${q.device === 'mobile' ? '📱' : '💻'} ${fmtDate(q.createdAt)}</span>
+      </span>
+    </button>`;
+  }).join('') : `<div class="card-pad muted">No quotes yet for this company.</div>`;
+
+  return `
+    <div class="grid">${stats}</div>
+    <div class="card" style="overflow:hidden">
+      <div class="card-head">
+        <div class="card-title">Quotes for ${esc(co.short)}</div>
+        <button class="btn primary" data-go="new">New quote</button>
       </div>
-      <p id="formError" style="color:#ef4444; margin-top:10px"></p>
+      ${rows}
     </div>
-  `;
+    <div class="card card-pad stack" style="gap:8px">
+      <div class="eyebrow accent">How continuity works</div>
+      <p class="muted">The number never lives on the phone or the laptop. When anyone starts a quote, this server hands out the next number in that company's sequence and holds it for 30 minutes while the quote is drafted — so two people quoting at the same time can't collide, and an abandoned draft releases its number. ${esc(co.short)} has ${mine.length} quotes, so the next one — from any device, anywhere — is <strong style="color:var(--black)">${esc(state.next[co.id])}</strong>.</p>
+    </div>`;
+}
 
-  let logoDataUrl = company?.logo_data_url || null;
-  document.getElementById('logoDrop').onclick = () => document.getElementById('logoFile').click();
-  document.getElementById('logoFile').onchange = (e) => {
-    const file = e.target.files[0];
+function viewNew() {
+  const co = company();
+  const r = state.reservation;
+  const items = state.draft.items.map((it, i) => `
+    <div class="lineitem">
+      <input class="input" placeholder="Description of work" value="${esc(it.desc)}" data-item="${i}" data-key="desc" />
+      <div class="lineitem-controls">
+        <label class="field"><span class="field-label">Qty</span>
+          <input class="input" inputmode="decimal" value="${esc(it.qty)}" data-item="${i}" data-key="qty" /></label>
+        <label class="field wide"><span class="field-label">Unit price</span>
+          <input class="input" inputmode="decimal" value="${esc(it.rate)}" data-item="${i}" data-key="rate" /></label>
+        <div class="lineitem-total">
+          <div class="field-label">Line total</div>
+          <div class="amount">${money((Number(it.qty) || 0) * (Number(it.rate) || 0))}</div>
+        </div>
+        <button class="btn ghost" data-remove="${i}">Remove</button>
+      </div>
+    </div>`).join('');
+
+  const sub = state.draft.items.reduce((a, it) => a + (Number(it.qty) || 0) * (Number(it.rate) || 0), 0);
+  const vat = sub * (Number(co.vatRate) || 0) / 100;
+
+  return `
+    <div class="card card-pad row" style="justify-content:space-between">
+      <div class="stack" style="gap:4px">
+        <div class="eyebrow">Number reserved from server</div>
+        <div class="stat-value" style="font-size:26px">${esc(r ? r.number : '…')}</div>
+      </div>
+      <div class="stack" style="gap:5px;align-items:flex-start">
+        <div class="pill tint">${isMobileDevice() ? '📱' : '💻'} Drafting on ${isMobileDevice() ? 'mobile' : 'desktop'}</div>
+        <div class="stat-sub">Held for 30 min · released if abandoned</div>
+      </div>
+    </div>
+
+    <div class="card card-pad stack">
+      <div class="card-title">Client</div>
+      <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(200px,1fr))">
+        <label class="field"><span class="field-label">Client name</span>
+          <input class="input" placeholder="Acme Manufacturing" value="${esc(state.draft.client)}" data-draft="client" /></label>
+        <label class="field"><span class="field-label">Contact / site</span>
+          <input class="input" placeholder="T. Mokoena · Midrand site" value="${esc(state.draft.contact)}" data-draft="contact" /></label>
+      </div>
+      <label class="field"><span class="field-label">Notes on the quote (optional)</span>
+        <textarea class="input" data-draft="notes" placeholder="Scope assumptions, access requirements…">${esc(state.draft.notes)}</textarea></label>
+    </div>
+
+    <div class="card card-pad stack">
+      <div class="row" style="justify-content:space-between">
+        <div class="card-title">Line items</div>
+        <button class="btn" data-additem>+ Add line</button>
+      </div>
+      <div class="stack" style="gap:12px">${items}</div>
+      <div class="totals">
+        <div class="totals-line"><span>Subtotal</span><span>${money(sub)}</span></div>
+        <div class="totals-line"><span>VAT (${co.vatRate}%)</span><span>${money(vat)}</span></div>
+        <div class="totals-grand"><span class="label">Total</span><span class="value">${money(sub + vat)}</span></div>
+      </div>
+    </div>
+
+    <div class="row">
+      <button class="btn primary block" style="flex:1;min-width:200px" data-save>Save &amp; issue ${esc(r ? r.number : '')}</button>
+      <button class="btn" data-go="quotes">Cancel</button>
+    </div>`;
+}
+
+function viewQuote() {
+  const q = state.quotes.find(x => x.id === state.openId);
+  if (!q) return `<div class="card card-pad muted">Quote not found.</div>`;
+  const co = company(q.companyId);
+  const t = quoteTotals(q);
+
+  const lines = q.items.map(it => {
+    const amt = (Number(it.qty) || 0) * (Number(it.rate) || 0);
+    return `<div class="doc-line">
+      <span class="col-desc">${esc(it.desc)}</span>
+      <span class="col-qty">${esc(it.qty)}</span>
+      <span class="col-rate">${money(it.rate, co)}</span>
+      <span class="col-amt">${money(amt, co)}</span>
+      <span class="mobile-meta"><span class="qtyrate">${esc(it.qty)} × ${money(it.rate, co)}</span><span class="amount">${money(amt, co)}</span></span>
+    </div>`;
+  }).join('');
+
+  return `
+    <div class="row no-print">
+      <button class="btn" data-go="quotes">← Back</button>
+      <button class="btn dark" data-print>Print / save PDF</button>
+      <select class="input compact" data-status>
+        ${['Draft', 'Sent', 'Accepted', 'Declined'].map(s => `<option ${s === q.status ? 'selected' : ''}>${s}</option>`).join('')}
+      </select>
+      <div class="stat-sub spacer">Layout: ${esc({ band: 'Gradient band', classic: 'Classic bordered', minimal: 'Minimal typographic' }[co.layout] || co.layout)}</div>
+    </div>
+
+    <div class="doc ${esc(co.layout)}">
+      <div class="doc-head">
+        <div class="row" style="gap:12px;flex-wrap:nowrap">
+          <div class="doc-logo">${esc(co.initials)}</div>
+          <div>
+            <div class="doc-company">${esc(co.name)}</div>
+            <div class="doc-tagline">${esc(co.tagline)}</div>
+          </div>
+        </div>
+        <div class="doc-id">
+          <div class="doc-label">Quotation</div>
+          <div class="doc-number">${esc(q.number)}</div>
+          <div class="doc-date">${fmtDate(q.createdAt)}</div>
+        </div>
+      </div>
+
+      <div class="doc-body">
+        <div class="doc-parties">
+          <div class="doc-block">
+            <div class="doc-mini-label">From</div>
+            <div class="name">${esc(co.name)}</div>
+            <div class="lines">${esc(co.address)}</div>
+            <div class="lines">VAT ${esc(co.vatNo)}${co.regNo ? ' · Reg ' + esc(co.regNo) : ''}</div>
+          </div>
+          <div class="doc-block">
+            <div class="doc-mini-label">Quote to</div>
+            <div class="name">${esc(q.client)}</div>
+            <div class="lines">${esc(q.contact)}</div>
+            <div class="lines">Valid until ${addDays(q.createdAt, co.validDays)}</div>
+          </div>
+        </div>
+
+        <div>
+          <div class="doc-thead">
+            <span class="col-desc">Description</span>
+            <span class="col-qty">Qty</span>
+            <span class="col-rate">Unit</span>
+            <span class="col-amt">Amount</span>
+          </div>
+          ${lines}
+        </div>
+
+        ${q.notes ? `<div class="doc-block"><div class="doc-mini-label">Notes</div><div class="lines">${esc(q.notes)}</div></div>` : ''}
+
+        <div class="doc-totals">
+          <div class="doc-totals-inner">
+            <div class="totals-line"><span>Subtotal</span><span>${money(t.sub, co)}</span></div>
+            <div class="totals-line"><span>VAT (${t.rate}%)</span><span>${money(t.vat, co)}</span></div>
+            <div class="doc-grand"><span>Total due</span><span>${money(t.grand, co)}</span></div>
+          </div>
+        </div>
+
+        <div class="doc-parties" style="border-top:1px solid var(--gray-100);padding-top:18px">
+          <div class="doc-block">
+            <div class="doc-mini-label">Banking details</div>
+            <div class="lines">${esc(co.banking)}</div>
+          </div>
+          <div class="doc-block">
+            <div class="doc-mini-label">Terms</div>
+            <div class="lines">${esc(co.terms)}</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="doc-foot">${esc(co.footer)}</div>
+    </div>`;
+}
+
+const BUSINESS_FIELDS = [
+  ['name', 'Registered name', 'text'], ['short', 'Short name', 'text'],
+  ['initials', 'Logo initials', 'text'], ['tagline', 'Tagline', 'text'],
+  ['currency', 'Currency symbol', 'text'], ['vatRate', 'VAT %', 'number']
+];
+const NUMBERING_FIELDS = [
+  ['prefix', 'Number prefix', 'text'], ['pad', 'Digits', 'number'],
+  ['validDays', 'Validity (days)', 'number']
+];
+const REG_FIELDS = [['vatNo', 'VAT number', 'text'], ['regNo', 'Reg number', 'text']];
+
+function fieldInputs(c, fields) {
+  return fields.map(([k, label, type]) => `
+    <label class="field"><span class="field-label">${label}</span>
+      <input class="input" type="${type}" value="${esc(c[k])}" data-co="${c.id}" data-field="${k}" /></label>`).join('');
+}
+
+// Companies is admin-only (gated in go()), so no read-only branching needed here.
+function viewCompanies() {
+  const cards = state.companies.map(c => {
+    const on = c.id === state.companyId;
+    const inactive = c.active === false;
+    const logoUrl = state.companyLogoEdits[c.id] !== undefined ? state.companyLogoEdits[c.id] : c.logoDataUrl;
+    const quoteCount = state.quotes.filter(q => q.companyId === c.id).length;
+    return `<button type="button" class="card card-pad stack company-card" style="${on ? 'border-color:var(--purple)' : ''}${inactive ? ';opacity:0.55' : ''}" data-editcompany="${c.id}">
+      <div class="row" style="align-items:flex-start">
+        <div class="doc-logo">${logoUrl ? `<img src="${logoUrl}" style="width:100%;height:100%;object-fit:cover;border-radius:11px" />` : esc(c.initials)}</div>
+        <div style="flex:1;min-width:0">
+          <div class="card-title" style="font-size:15px">${esc(c.name)}</div>
+          <div class="stat-sub">${esc(c.tagline || '')}</div>
+        </div>
+      </div>
+      <div class="row" style="justify-content:space-between;align-items:center">
+        <div class="pill tint">Next: ${esc(state.next[c.id] || '—')}</div>
+        ${inactive ? '<span class="badge">Inactive</span>' : (on ? '<span class="badge sent">Selected</span>' : '')}
+      </div>
+      <div class="stat-sub">${quoteCount} quote${quoteCount === 1 ? '' : 's'} issued</div>
+    </button>`;
+  }).join('');
+
+  const addTile = `<button type="button" class="card card-pad stack company-card" style="align-items:center;justify-content:center;text-align:center;border-style:dashed;gap:4px" data-go="company-new">
+    <div style="font-size:26px;color:var(--gray-400);line-height:1">+</div>
+    <div class="stat-sub">Add a company</div>
+  </button>`;
+
+  return `
+    <p class="muted">Each company keeps its own letterhead, address, VAT number, banking details, numbering format and quote layout — and its own independent number sequence. Click a card to view or edit it.</p>
+    <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(220px,1fr))">${cards}${addTile}</div>`;
+}
+
+function deleteConfirmBlock(c, quoteCount) {
+  const dc = state.deleteConfirm;
+  if (!dc || dc.id !== c.id) {
+    return `<button class="btn" style="color:#B91C1C" data-startdelete="${c.id}">Delete company</button>`;
+  }
+  const locked = dc.secondsLeft > 0;
+  const textOk = dc.text.trim() === 'DELETE';
+  return `
+    <div class="stack" style="border:1px solid #FCA5A5;background:#FEF2F2;border-radius:12px;padding:14px;gap:10px">
+      <div class="card-title" style="color:#B91C1C">Delete ${esc(c.name)}?</div>
+      <p class="muted">This permanently deletes the company ${quoteCount ? `and all <strong>${quoteCount}</strong> of its quotes` : ''} — including its numbering history in the audit trail. This cannot be undone.</p>
+      <label class="field"><span class="field-label">Type DELETE to confirm</span>
+        <input class="input" data-deleteinput value="${esc(dc.text)}" ${locked ? 'disabled' : ''} placeholder="DELETE" autocomplete="off" /></label>
+      <div class="row">
+        <button class="btn" style="background:#B91C1C;color:#fff;border-color:#B91C1C" data-confirmdelete="${c.id}" ${locked || !textOk ? 'disabled' : ''}>
+          ${locked ? `Wait ${dc.secondsLeft}s…` : 'Permanently delete'}
+        </button>
+        <button class="btn" data-canceldelete>Cancel</button>
+      </div>
+    </div>`;
+}
+
+function viewCompanyDetail() {
+  const c = company(state.editingCompanyId);
+  if (!c) return `<div class="card card-pad muted stack">Company not found.<button class="btn" data-go="companies" style="align-self:flex-start">← Back to companies</button></div>`;
+
+  const inactive = c.active === false;
+  const on = c.id === state.companyId;
+  const logoUrl = state.companyLogoEdits[c.id] !== undefined ? state.companyLogoEdits[c.id] : c.logoDataUrl;
+  const quoteCount = state.quotes.filter(q => q.companyId === c.id).length;
+
+  return `
+    <div class="row no-print" style="justify-content:space-between">
+      <button class="btn" data-go="companies">← Back to companies</button>
+      <button class="btn ${on ? 'primary' : ''}" data-select="${c.id}" ${on || inactive ? 'disabled' : ''}>${on ? 'Selected' : 'Switch to'}</button>
+    </div>
+
+    <div>
+      <div class="eyebrow accent">Edit company${inactive ? ' · Inactive' : ''}</div>
+      <h2 style="font-size:26px;margin:2px 0 4px">${esc(c.name)}</h2>
+      <div class="stat-sub">${esc(c.tagline || '')}${c.tagline ? ' · ' : ''}${quoteCount} quote${quoteCount === 1 ? '' : 's'} issued</div>
+    </div>
+
+    <div class="card card-pad stack">
+      <div class="card-title">Business details</div>
+      <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(150px,1fr))">
+        ${fieldInputs(c, BUSINESS_FIELDS)}
+        ${fieldInputs(c, NUMBERING_FIELDS)}
+        ${fieldInputs(c, REG_FIELDS)}
+        <label class="field"><span class="field-label">Quote layout</span>
+          <select class="input" data-co="${c.id}" data-field="layout">
+            ${[['band', 'Gradient band'], ['classic', 'Classic bordered'], ['minimal', 'Minimal typographic']]
+              .map(([v, l]) => `<option value="${v}" ${c.layout === v ? 'selected' : ''}>${l}</option>`).join('')}
+          </select></label>
+      </div>
+
+      <label class="field"><span class="field-label">Address</span>
+        <textarea class="input" data-co="${c.id}" data-field="address">${esc(c.address)}</textarea></label>
+
+      <div class="card-title" style="margin-top:6px">Logo</div>
+      <label class="logo-drop" for="logoFile-${c.id}">
+        ${logoUrl ? `<img src="${logoUrl}" style="width:36px;height:36px;object-fit:cover;border-radius:8px;flex:none" />` : ''}
+        <span>${logoUrl ? 'Click to change logo (PNG/JPG, shown on quotes)' : 'Click to upload a logo (PNG/JPG, shown on quotes)'}</span>
+      </label>
+      <input type="file" id="logoFile-${c.id}" accept="image/*" data-logoupload="${c.id}" style="display:none" />
+
+      <div class="card-title" style="margin-top:6px">Banking details <span class="stat-sub">(printed on quotes)</span></div>
+      <textarea class="input" data-co="${c.id}" data-field="banking">${esc(c.banking)}</textarea>
+
+      <div class="card-title" style="margin-top:6px">Document text</div>
+      <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(220px,1fr))">
+        <label class="field"><span class="field-label">Terms</span>
+          <textarea class="input" data-co="${c.id}" data-field="terms">${esc(c.terms)}</textarea></label>
+        <label class="field"><span class="field-label">Document footer</span>
+          <textarea class="input" data-co="${c.id}" data-field="footer">${esc(c.footer)}</textarea></label>
+      </div>
+
+      <div class="row" style="margin-top:6px">
+        <div class="pill tint">Next: ${esc(state.next[c.id] || '—')}</div>
+        <button class="btn primary spacer" data-savecompany="${c.id}">Save ${esc(c.short)}</button>
+        <button class="btn" data-toggleactive="${c.id}">${inactive ? 'Reactivate' : 'Deactivate'}</button>
+        ${state.deleteConfirm && state.deleteConfirm.id === c.id ? '' : deleteConfirmBlock(c, quoteCount)}
+      </div>
+      ${state.deleteConfirm && state.deleteConfirm.id === c.id ? deleteConfirmBlock(c, quoteCount) : ''}
+    </div>`;
+}
+
+function viewCompanyNew() {
+  const d = state.newCompanyDraft;
+  return `
+    <p class="muted">Set up a new company — its own letterhead, VAT number, banking details, numbering format and quote layout, with an independent number sequence starting at 1.</p>
+    <div class="card card-pad stack">
+      <div class="card-title">Business details</div>
+      <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(160px,1fr))">
+        <label class="field"><span class="field-label">Registered name *</span>
+          <input class="input" placeholder="Acme Electrical Services" value="${esc(d.name)}" data-newco="name" /></label>
+        <label class="field"><span class="field-label">Short name</span>
+          <input class="input" placeholder="Acme Electrical" value="${esc(d.short)}" data-newco="short" /></label>
+        <label class="field"><span class="field-label">Logo initials</span>
+          <input class="input" placeholder="ACM" value="${esc(d.initials)}" data-newco="initials" /></label>
+        <label class="field"><span class="field-label">Tagline</span>
+          <input class="input" value="${esc(d.tagline)}" data-newco="tagline" /></label>
+        <label class="field"><span class="field-label">Number prefix</span>
+          <input class="input" placeholder="ACM-Q" value="${esc(d.prefix)}" data-newco="prefix" /></label>
+        <label class="field"><span class="field-label">Digits</span>
+          <input class="input" type="number" value="${esc(d.pad)}" data-newco="pad" /></label>
+        <label class="field"><span class="field-label">Currency symbol</span>
+          <input class="input" value="${esc(d.currency)}" data-newco="currency" /></label>
+        <label class="field"><span class="field-label">VAT %</span>
+          <input class="input" type="number" value="${esc(d.vatRate)}" data-newco="vatRate" /></label>
+        <label class="field"><span class="field-label">Validity (days)</span>
+          <input class="input" type="number" value="${esc(d.validDays)}" data-newco="validDays" /></label>
+        <label class="field"><span class="field-label">Quote layout</span>
+          <select class="input" data-newco="layout">
+            ${[['band', 'Gradient band'], ['classic', 'Classic bordered'], ['minimal', 'Minimal typographic']]
+              .map(([v, l]) => `<option value="${v}" ${d.layout === v ? 'selected' : ''}>${l}</option>`).join('')}
+          </select></label>
+      </div>
+      <label class="field"><span class="field-label">Address</span>
+        <textarea class="input" data-newco="address">${esc(d.address)}</textarea></label>
+      <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(160px,1fr))">
+        <label class="field"><span class="field-label">VAT number</span>
+          <input class="input" value="${esc(d.vatNo)}" data-newco="vatNo" /></label>
+        <label class="field"><span class="field-label">Reg number</span>
+          <input class="input" value="${esc(d.regNo)}" data-newco="regNo" /></label>
+      </div>
+
+      <div class="row" style="align-items:center">
+        <div class="doc-logo">${d.logoDataUrl ? `<img src="${d.logoDataUrl}" style="width:100%;height:100%;object-fit:cover;border-radius:11px" />` : esc(d.initials || '?')}</div>
+        <label class="btn" for="logoFile-new">Upload logo</label>
+        <input type="file" id="logoFile-new" accept="image/*" data-logoupload="new" style="display:none" />
+        <div class="stat-sub">PNG/JPG, shown on quotes &amp; in the sidebar</div>
+      </div>
+
+      <label class="field"><span class="field-label">Banking details</span>
+        <textarea class="input" data-newco="banking">${esc(d.banking)}</textarea></label>
+      <label class="field"><span class="field-label">Terms</span>
+        <textarea class="input" data-newco="terms">${esc(d.terms)}</textarea></label>
+      <label class="field"><span class="field-label">Document footer</span>
+        <textarea class="input" data-newco="footer">${esc(d.footer)}</textarea></label>
+
+      <div class="row">
+        <button class="btn primary" data-savenewcompany>Create company</button>
+        <button class="btn" data-go="companies">Cancel</button>
+      </div>
+    </div>`;
+}
+
+const AUDIT_LABEL = {
+  'quote.create': a => `${a.details?.number || 'Quote'} issued to ${a.details?.client || 'a client'}`,
+  'quote.status_change': a => `${a.details?.number || 'Quote'} marked ${a.details?.to || ''}`,
+  'company.create': a => `Company created: ${a.details?.name || a.targetId}`,
+  'company.update': a => `Company details updated: ${a.targetId}`,
+  'company.deactivate': a => `Company deactivated: ${a.targetId}`,
+  'company.reactivate': a => `Company reactivated: ${a.targetId}`,
+  'company.delete': a => `Company deleted: ${a.details?.name || a.targetId}${a.details?.quotesDeleted ? ` (${a.details.quotesDeleted} quotes deleted with it)` : ''}`,
+  'auth.login': a => `${a.actorEmail} signed in`,
+  'auth.logout': a => `${a.actorEmail} signed out`
+};
+const AUDIT_ICON = a => a.action.startsWith('auth') ? '🔑' : a.action.startsWith('company') ? '🏢' : (a.device === 'mobile' ? '📱' : '💻');
+
+function viewActivity() {
+  const rows = (state.auditLog || []).map(a => `<div class="activity-row">
+      <div class="activity-icon">${AUDIT_ICON(a)}</div>
+      <div class="activity-main">
+        <div class="activity-title">${esc((AUDIT_LABEL[a.action] || (x => x.action))(a))}</div>
+        <div class="activity-detail">${esc(a.actorEmail || 'system')}${a.actorRole ? ' · ' + esc(a.actorRole) : ''}</div>
+      </div>
+      <div class="activity-when">${fmtDate(a.at)}</div>
+    </div>`).join('');
+
+  return `
+    <p class="muted">Every action across the system — quotes issued, companies changed, sign-ins — with who did it and when. This is the audit trail: server-recorded, not derived from the browser.</p>
+    <div class="card" style="overflow:hidden">${rows || '<div class="card-pad muted">No activity yet.</div>'}</div>`;
+}
+
+/* ----------------------------------------------------------------- events */
+
+document.addEventListener('click', async e => {
+  const t = e.target.closest('[data-go],[data-open],[data-editcompany],[data-save],[data-additem],[data-remove],[data-print],[data-select],[data-savecompany],[data-toggleactive],[data-startdelete],[data-canceldelete],[data-confirmdelete],[data-savenewcompany],[data-logout]');
+  if (!t) return;
+
+  if (t.hasAttribute('data-logout')) {
+    try { await api('POST', '/api/auth/logout'); } catch (_) { /* session already gone */ }
+    state.user = null;
+    renderLogin();
+    return;
+  }
+
+  if (t.dataset.go) return go(t.dataset.go);
+  if (t.dataset.open) { state.openId = t.dataset.open; return go('quote'); }
+  if (t.dataset.editcompany) { state.editingCompanyId = t.dataset.editcompany; return go('company-detail'); }
+  if (t.hasAttribute('data-print')) return window.print();
+
+  if (t.hasAttribute('data-additem')) {
+    state.draft.items.push({ desc: '', qty: '1', rate: '0' });
+    return render();
+  }
+  if (t.dataset.remove) {
+    state.draft.items.splice(Number(t.dataset.remove), 1);
+    if (!state.draft.items.length) state.draft.items.push({ desc: '', qty: '1', rate: '0' });
+    return render();
+  }
+
+  if (t.dataset.select) {
+    state.companyId = t.dataset.select;
+    return go('quotes');
+  }
+
+  if (t.dataset.savecompany) {
+    const id = t.dataset.savecompany;
+    const payload = {};
+    document.querySelectorAll(`[data-co="${id}"]`).forEach(f => { payload[f.dataset.field] = f.value; });
+    if (id in state.companyLogoEdits) payload.logoDataUrl = state.companyLogoEdits[id];
+    t.disabled = true;
+    try {
+      const out = await api('PUT', '/api/companies/' + id, payload);
+      Object.assign(company(id), out.company);
+      delete state.companyLogoEdits[id];
+      state.next[id] = out.next;
+      renderChrome(); render();
+      toast(out.company.short + ' details saved for every device');
+    } catch (err) { toast('Could not save: ' + err.message); }
+    t.disabled = false;
+    return;
+  }
+
+  if (t.dataset.toggleactive) {
+    const id = t.dataset.toggleactive;
+    const co = company(id);
+    const nextActiveState = co.active === false;
+    t.disabled = true;
+    try {
+      const out = await api('PUT', '/api/companies/' + id, { active: nextActiveState });
+      Object.assign(co, out.company);
+      if (!nextActiveState && state.companyId === id) {
+        const fallback = state.companies.find(c2 => c2.id !== id && c2.active !== false);
+        if (fallback) state.companyId = fallback.id;
+      }
+      renderChrome(); render();
+      toast(`${co.short} ${nextActiveState ? 'reactivated' : 'deactivated'}`);
+    } catch (err) { toast('Could not update: ' + err.message); }
+    t.disabled = false;
+    return;
+  }
+
+  if (t.dataset.startdelete) {
+    const id = t.dataset.startdelete;
+    state.deleteConfirm = { id, secondsLeft: 5, text: '' };
+    render();
+    clearInterval(deleteCountdownTimer);
+    deleteCountdownTimer = setInterval(() => {
+      if (!state.deleteConfirm || state.deleteConfirm.id !== id) { clearInterval(deleteCountdownTimer); return; }
+      state.deleteConfirm.secondsLeft -= 1;
+      if (state.deleteConfirm.secondsLeft <= 0) {
+        state.deleteConfirm.secondsLeft = 0;
+        clearInterval(deleteCountdownTimer);
+        render(); // unlock the confirm input/button
+      } else {
+        const btn = document.querySelector('[data-confirmdelete]');
+        if (btn) btn.textContent = `Wait ${state.deleteConfirm.secondsLeft}s…`;
+      }
+    }, 1000);
+    return;
+  }
+
+  if (t.hasAttribute('data-canceldelete')) {
+    clearInterval(deleteCountdownTimer);
+    state.deleteConfirm = null;
+    render();
+    return;
+  }
+
+  if (t.dataset.confirmdelete) {
+    const id = t.dataset.confirmdelete;
+    const co = company(id);
+    t.disabled = true;
+    try {
+      await api('DELETE', '/api/companies/' + id);
+      state.companies = state.companies.filter(c2 => c2.id !== id);
+      state.quotes = state.quotes.filter(q => q.companyId !== id);
+      delete state.companyLogoEdits[id];
+      if (state.companyId === id) {
+        const fallback = state.companies.find(c2 => c2.active !== false) || state.companies[0];
+        state.companyId = fallback ? fallback.id : null;
+      }
+      state.deleteConfirm = null;
+      if (state.editingCompanyId === id) state.screen = 'companies';
+      renderChrome(); render();
+      toast(`${co.name} permanently deleted`);
+    } catch (err) { toast('Could not delete: ' + err.message); t.disabled = false; }
+    return;
+  }
+
+  if (t.hasAttribute('data-savenewcompany')) {
+    if (!state.newCompanyDraft.name || !state.newCompanyDraft.name.trim()) {
+      toast('Company name is required');
+      return;
+    }
+    t.disabled = true;
+    try {
+      const out = await api('POST', '/api/companies', state.newCompanyDraft);
+      state.companies.push(out.company);
+      state.next[out.company.id] = out.next;
+      state.companyId = out.company.id;
+      state.screen = 'quotes';
+      renderChrome(); render(); window.scrollTo(0, 0);
+      toast(`${out.company.name} added — first quote will be ${out.next}`);
+    } catch (err) { toast('Could not create company: ' + err.message); }
+    t.disabled = false;
+    return;
+  }
+
+  if (t.hasAttribute('data-save')) {
+    t.disabled = true;
+    try {
+      const out = await api('POST', '/api/quotes', {
+        companyId: state.companyId,
+        token: state.reservation && state.reservation.token,
+        client: state.draft.client, contact: state.draft.contact, notes: state.draft.notes,
+        items: state.draft.items,
+        device: isMobileDevice() ? 'mobile' : 'desktop'
+      });
+      state.quotes.push(out.quote);
+      state.next[state.companyId] = out.next;
+      state.reservation = null;
+      state.openId = out.quote.id;
+      state.draft = { client: '', contact: '', notes: '', items: [{ desc: '', qty: '1', rate: '0' }] };
+      state.screen = 'quote';
+      renderChrome(); render(); window.scrollTo(0, 0);
+      toast(`${out.quote.number} issued from ${out.quote.device} · sequence advanced for everyone`);
+    } catch (err) { toast('Could not save: ' + err.message); t.disabled = false; }
+  }
+});
+
+document.addEventListener('input', e => {
+  const f = e.target;
+  if (f.dataset.draft) { state.draft[f.dataset.draft] = f.value; return; }
+  if (f.dataset.newco) { state.newCompanyDraft[f.dataset.newco] = f.value; return; }
+  if (f.hasAttribute('data-deleteinput')) {
+    state.deleteConfirm.text = f.value;
+    const btn = document.querySelector('[data-confirmdelete]');
+    if (btn) btn.disabled = state.deleteConfirm.secondsLeft > 0 || f.value.trim() !== 'DELETE';
+    return;
+  }
+  if (f.dataset.item !== undefined && f.dataset.key) {
+    const it = state.draft.items[Number(f.dataset.item)];
+    it[f.dataset.key] = f.value;
+    if (f.dataset.key !== 'desc') {
+      // live totals without losing focus
+      const box = f.closest('.lineitem');
+      box.querySelector('.lineitem-total .amount').textContent = money((Number(it.qty) || 0) * (Number(it.rate) || 0));
+      const co = company();
+      const sub = state.draft.items.reduce((a, x) => a + (Number(x.qty) || 0) * (Number(x.rate) || 0), 0);
+      const vat = sub * (Number(co.vatRate) || 0) / 100;
+      const t = document.querySelectorAll('.totals .totals-line span:last-child');
+      if (t[0]) t[0].textContent = money(sub);
+      if (t[1]) t[1].textContent = money(vat);
+      const g = document.querySelector('.totals-grand .value');
+      if (g) g.textContent = money(sub + vat);
+    }
+  }
+});
+
+document.addEventListener('change', async e => {
+  const f = e.target;
+  if (f.id === 'companyPicker' || f.id === 'companyPickerMobile') {
+    if (state.screen === 'new') await releaseNumber();
+    state.companyId = f.value;
+    state.openId = null;
+    return go(state.screen === 'quote' ? 'quotes' : state.screen);
+  }
+  if (f.dataset.logoupload !== undefined) {
+    const file = f.files[0];
     if (!file) return;
     const reader = new FileReader();
     reader.onload = () => {
-      logoDataUrl = reader.result;
-      const img = document.getElementById('logoPreview');
-      img.src = logoDataUrl;
-      img.classList.remove('hidden');
+      if (f.dataset.logoupload === 'new') {
+        state.newCompanyDraft.logoDataUrl = reader.result;
+      } else {
+        state.companyLogoEdits[f.dataset.logoupload] = reader.result;
+      }
+      render();
     };
     reader.readAsDataURL(file);
-  };
-
-  document.getElementById('cancelCompany').onclick = () => go(company ? 'dashboard' : 'companies', company ? { companyId: company.id } : {});
-
-  document.getElementById('saveCompany').onclick = async () => {
-    const payload = {
-      name: document.getElementById('f_name').value.trim(),
-      quote_prefix: document.getElementById('f_prefix').value.trim().toUpperCase(),
-      email: document.getElementById('f_email').value.trim(),
-      phone: document.getElementById('f_phone').value.trim(),
-      website: document.getElementById('f_website').value.trim(),
-      currency: document.getElementById('f_currency').value.trim() || 'USD',
-      default_tax_rate: Number(document.getElementById('f_tax').value || 0),
-      accent_color: document.getElementById('f_color').value,
-      address: document.getElementById('f_address').value.trim(),
-      logo_data_url: logoDataUrl,
-      bank_name: document.getElementById('f_bank_name').value.trim(),
-      bank_account_name: document.getElementById('f_bank_acc_name').value.trim(),
-      bank_account_number: document.getElementById('f_bank_acc_num').value.trim(),
-      bank_branch: document.getElementById('f_bank_branch').value.trim(),
-      bank_swift: document.getElementById('f_bank_swift').value.trim(),
-    };
-    if (!payload.name) {
-      document.getElementById('formError').textContent = 'Company name is required.';
-      return;
-    }
+    return;
+  }
+  if (f.hasAttribute('data-status')) {
+    const q = state.quotes.find(x => x.id === state.openId);
     try {
-      const saved = company
-        ? await api(`/api/companies/${company.id}`, { method: 'PUT', body: JSON.stringify(payload) })
-        : await api('/api/companies', { method: 'POST', body: JSON.stringify(payload) });
-      go('dashboard', { companyId: saved.id });
-    } catch (err) {
-      document.getElementById('formError').textContent = err.message;
-    }
-  };
-
-  if (company) {
-    document.getElementById('deleteCompany').onclick = async () => {
-      if (!confirm(`Delete ${company.name}? This also removes its quotes.`)) return;
-      await api(`/api/companies/${company.id}`, { method: 'DELETE' });
-      go('companies');
-    };
+      await api('PATCH', '/api/quotes/' + q.id, { status: f.value });
+      q.status = f.value;
+      toast(q.number + ' marked ' + f.value.toLowerCase());
+    } catch (err) { toast('Could not update: ' + err.message); }
   }
-}
+});
 
-// ---------------- Company dashboard (quote list) ----------------
-async function renderDashboard(companyId) {
-  const [company, quotes] = await Promise.all([
-    api(`/api/companies/${companyId}`),
-    api(`/api/companies/${companyId}/quotes`)
-  ]);
-
-  el.innerHTML = `
-    <div class="panel-header" style="margin-bottom:6px; border:none; padding:0">
-      <div style="display:flex; align-items:center; gap:14px">
-        ${company.logo_data_url ? `<img class="company-logo-sm" src="${company.logo_data_url}">` : `<div class="company-logo-sm" style="display:flex;align-items:center;justify-content:center;color:${company.accent_color};font-weight:700">${escapeHtml(company.name[0])}</div>`}
-        <div>
-          <div class="tag">Company</div>
-          <h1 class="serif" style="margin:2px 0; font-size:26px">${escapeHtml(company.name)}</h1>
-        </div>
-      </div>
-      <div style="display:flex; gap:10px">
-        <button class="btn ghost small" id="editCompany">Edit details</button>
-        <button class="btn ghost small" id="allCompanies">All companies</button>
-      </div>
-    </div>
-
-    <div class="panel" style="margin-top:20px">
-      <div class="panel-header">
-        <div>
-          <h2 style="margin:0">Quotes</h2>
-          <p class="device-note">Next number will be <b>${company.quote_prefix}-${String(company.next_quote_seq + 1).padStart(4,'0')}</b> — assigned by the server the instant "Create quote" is pressed, from <b>${escapeHtml(sessionStorage.getItem('deviceLabel'))}</b> (this tab).</p>
-        </div>
-        <button class="btn solid" id="newQuote" style="border-color:${company.accent_color}; background:${company.accent_color}">+ New quote</button>
-      </div>
-      ${quotes.length === 0 ? `<p class="tag">No quotes yet for this company.</p>` : `
-        <div class="quote-list-row head">
-          <span>Number</span><span>Client</span><span>Date</span><span>Total</span><span>Status</span>
-        </div>
-        ${quotes.map(q => `
-          <div class="quote-list-row" data-id="${q.id}">
-            <span>${escapeHtml(q.quote_number)}</span>
-            <span>${escapeHtml(q.client_name || '—')}</span>
-            <span>${escapeHtml(q.issue_date || '')}</span>
-            <span>${money(q.total, company.currency)}</span>
-            <span class="status-pill status-${q.status}">${q.status}</span>
-          </div>
-        `).join('')}
-      `}
-    </div>
-  `;
-
-  document.getElementById('editCompany').onclick = () => go('company-form', { companyId });
-  document.getElementById('allCompanies').onclick = () => go('companies');
-  document.getElementById('newQuote').onclick = () => go('quote-form', { companyId });
-  el.querySelectorAll('.quote-list-row[data-id]').forEach(row => {
-    row.onclick = () => go('quote-view', { quoteId: Number(row.dataset.id) });
-  });
-}
-
-// ---------------- New quote form ----------------
-async function renderQuoteForm(companyId) {
-  const company = await api(`/api/companies/${companyId}`);
-  let items = [{ description: '', qty: 1, unit_price: 0 }];
-
-  el.innerHTML = `
-    <div class="tag">${escapeHtml(company.name)}</div>
-    <h2 class="serif" style="font-size:26px">New quote</h2>
-    <p class="device-note">Creating from <b>${escapeHtml(sessionStorage.getItem('deviceLabel'))}</b> — number is assigned on save by the shared server counter, continuing from wherever the last quote (on any device) left off.</p>
-
-    <div class="panel">
-      <h2>Client</h2>
-      <div class="form-grid">
-        <div><label>Client name</label><input id="q_client_name"></div>
-        <div><label>Client email</label><input id="q_client_email"></div>
-        <div><label>Issue date</label><input id="q_issue_date" type="date" value="${new Date().toISOString().slice(0,10)}"></div>
-        <div><label>Valid until</label><input id="q_valid_until" type="date"></div>
-      </div>
-      <label>Client address</label><textarea id="q_client_address" rows="2"></textarea>
-    </div>
-
-    <div class="panel">
-      <div class="panel-header"><h2 style="margin:0">Line items</h2><button class="btn ghost small" id="addItem">+ Add line</button></div>
-      <table>
-        <thead><tr><th>Description</th><th>Qty</th><th>Unit price</th><th>Line total</th><th></th></tr></thead>
-        <tbody id="itemsBody"></tbody>
-      </table>
-      <div class="form-grid" style="margin-top:10px">
-        <div><label>Tax rate (%)</label><input id="q_tax_rate" type="number" step="0.01" value="${company.default_tax_rate}"></div>
-      </div>
-      <div class="totals-box" id="totalsBox"></div>
-    </div>
-
-    <div class="panel">
-      <label>Notes</label><textarea id="q_notes" rows="2" placeholder="Payment terms, validity, extra info..."></textarea>
-      <div style="display:flex; gap:10px; flex-wrap:wrap">
-        <button class="btn solid" id="saveQuote" style="border-color:${company.accent_color}; background:${company.accent_color}">Create quote</button>
-        <button class="btn ghost" id="cancelQuote">Cancel</button>
-      </div>
-      <p id="quoteError" style="color:#ef4444; margin-top:10px"></p>
-    </div>
-  `;
-
-  function renderItems() {
-    document.getElementById('itemsBody').innerHTML = items.map((it, i) => `
-      <tr class="item-row" data-i="${i}">
-        <td><input class="it-desc" value="${escapeHtml(it.description)}" placeholder="Item description"></td>
-        <td><input class="it-qty" type="number" step="0.01" value="${it.qty}" style="width:80px"></td>
-        <td><input class="it-price" type="number" step="0.01" value="${it.unit_price}" style="width:100px"></td>
-        <td>${money(it.qty * it.unit_price, company.currency)}</td>
-        <td>${items.length > 1 ? `<button class="remove-row" data-i="${i}">✕</button>` : ''}</td>
-      </tr>
-    `).join('');
-
-    document.querySelectorAll('.it-desc').forEach((inp,i) => inp.oninput = () => { items[i].description = inp.value; });
-    document.querySelectorAll('.it-qty').forEach((inp,i) => inp.oninput = () => { items[i].qty = Number(inp.value); renderTotals(); renderItems(); });
-    document.querySelectorAll('.it-price').forEach((inp,i) => inp.oninput = () => { items[i].unit_price = Number(inp.value); renderTotals(); renderItems(); });
-    document.querySelectorAll('.remove-row').forEach(btn => btn.onclick = () => { items.splice(Number(btn.dataset.i),1); renderTotals(); renderItems(); });
-    renderTotals();
+window.addEventListener('beforeunload', () => {
+  if (state.reservation && navigator.sendBeacon) {
+    navigator.sendBeacon('/api/release', new Blob([JSON.stringify({ token: state.reservation.token })], { type: 'application/json' }));
   }
+});
 
-  function renderTotals() {
-    const subtotal = items.reduce((s,it) => s + (Number(it.qty)||0)*(Number(it.unit_price)||0), 0);
-    const taxRate = Number(document.getElementById('q_tax_rate')?.value || 0);
-    const tax = subtotal * (taxRate/100);
-    document.getElementById('totalsBox').innerHTML = `
-      <div class="row"><span>Subtotal</span><span>${money(subtotal, company.currency)}</span></div>
-      <div class="row"><span>Tax (${taxRate}%)</span><span>${money(tax, company.currency)}</span></div>
-      <div class="row grand"><span>Total</span><span>${money(subtotal+tax, company.currency)}</span></div>
-    `;
-  }
+/* ------------------------------------------------------------------- auth */
 
-  renderItems();
-  document.getElementById('addItem').onclick = () => { items.push({ description:'', qty:1, unit_price:0 }); renderItems(); };
-  document.getElementById('q_tax_rate').oninput = renderTotals;
-  document.getElementById('cancelQuote').onclick = () => go('dashboard', { companyId });
+const APP_SHELL_HTML = document.querySelector('.app').innerHTML;
 
-  document.getElementById('saveQuote').onclick = async () => {
-    const payload = {
-      client_name: document.getElementById('q_client_name').value.trim(),
-      client_email: document.getElementById('q_client_email').value.trim(),
-      client_address: document.getElementById('q_client_address').value.trim(),
-      issue_date: document.getElementById('q_issue_date').value,
-      valid_until: document.getElementById('q_valid_until').value,
-      tax_rate: Number(document.getElementById('q_tax_rate').value || 0),
-      notes: document.getElementById('q_notes').value.trim(),
-      items: items.filter(it => it.description.trim() !== ''),
-      created_by_device: sessionStorage.getItem('deviceLabel'),
-    };
-    if (payload.items.length === 0) {
-      document.getElementById('quoteError').textContent = 'Add at least one line item.';
-      return;
-    }
+function renderLogin(error) {
+  document.querySelector('.app').innerHTML = `
+    <div style="min-height:100dvh;width:100%;display:flex;align-items:center;justify-content:center;padding:24px">
+      <div class="card card-pad stack" style="width:100%;max-width:360px">
+        <div class="stack" style="gap:6px;align-items:center;text-align:center">
+          <div class="brand-mark" style="width:40px;height:40px;border-radius:11px;background:var(--gradient);color:#fff;display:grid;place-items:center;font-weight:900">Q</div>
+          <div class="card-title" style="font-size:18px">Sign in to QuoteFlow</div>
+          <div class="stat-sub">Companies, quotes and numbering are shared across every signed-in device.</div>
+        </div>
+        <label class="field"><span class="field-label">Email</span>
+          <input class="input" id="loginEmail" type="email" placeholder="admin@quoteflow.demo" /></label>
+        <label class="field"><span class="field-label">Password</span>
+          <input class="input" id="loginPassword" type="password" placeholder="••••••••" /></label>
+        ${error ? `<p style="color:#B91C1C;font-size:13px">${esc(error)}</p>` : ''}
+        <button class="btn primary block" id="loginSubmit">Sign in</button>
+        <div class="stat-sub" style="text-align:center;line-height:1.6">Demo accounts (local test data) —<br/>admin@quoteflow.demo / admin123 (full access)<br/>staff@quoteflow.demo / staff123 (quotes only)</div>
+      </div>
+    </div>`;
+
+  const submit = async () => {
+    const email = el('loginEmail').value.trim();
+    const password = el('loginPassword').value;
+    el('loginSubmit').disabled = true;
     try {
-      const quote = await api(`/api/companies/${companyId}/quotes`, { method: 'POST', body: JSON.stringify(payload) });
-      go('quote-view', { quoteId: quote.id });
+      const out = await api('POST', '/api/auth/login', { email, password });
+      state.user = out.user;
+      await startApp();
     } catch (err) {
-      document.getElementById('quoteError').textContent = err.message;
+      renderLogin(err.message);
     }
   };
+  el('loginSubmit').onclick = submit;
+  el('loginPassword').addEventListener('keydown', e => { if (e.key === 'Enter') submit(); });
 }
 
-// ---------------- Quote print / view ----------------
-async function renderQuoteView(quoteId) {
-  const q = await api(`/api/quotes/${quoteId}`);
-  const c = q.company;
-
-  el.innerHTML = `
-    <div class="print-toolbar">
-      <button class="btn ghost small" id="backDash">← Back to ${escapeHtml(c.name)}</button>
-      <button class="btn solid small" id="printBtn" style="border-color:${c.accent_color}; background:${c.accent_color}">Print / Save as PDF</button>
-    </div>
-    <div class="quote-doc" style="border-top:6px solid ${c.accent_color}">
-      <div class="doc-top">
-        <div class="company-block">
-          ${c.logo_data_url ? `<img src="${c.logo_data_url}">` : ''}
-          <h3>${escapeHtml(c.name)}</h3>
-          <p>${escapeHtml(c.address || '')}</p>
-          <p>${escapeHtml(c.email || '')}${c.email && c.phone ? ' · ' : ''}${escapeHtml(c.phone || '')}</p>
-          <p>${escapeHtml(c.website || '')}</p>
-        </div>
-        <div class="doc-meta">
-          <p class="doc-title" style="color:${c.accent_color}">Quotation</p>
-          <p class="doc-number">${escapeHtml(q.quote_number)}</p>
-          <p>Issued: ${escapeHtml(q.issue_date || '')}</p>
-          ${q.valid_until ? `<p>Valid until: ${escapeHtml(q.valid_until)}</p>` : ''}
-          <p style="text-transform:capitalize">Status: ${q.status}</p>
-        </div>
-      </div>
-
-      <div class="bill-to">
-        <label>Quoted to</label>
-        <div><strong>${escapeHtml(q.client_name || '—')}</strong></div>
-        <div>${escapeHtml(q.client_email || '')}</div>
-        <div>${escapeHtml(q.client_address || '')}</div>
-      </div>
-
-      <table>
-        <thead><tr><th>Description</th><th>Qty</th><th>Unit price</th><th>Line total</th></tr></thead>
-        <tbody>
-          ${q.items.map(it => `
-            <tr>
-              <td>${escapeHtml(it.description)}</td>
-              <td>${it.qty}</td>
-              <td>${money(it.unit_price, c.currency)}</td>
-              <td>${money(it.line_total, c.currency)}</td>
-            </tr>
-          `).join('')}
-        </tbody>
-      </table>
-
-      <div class="totals-box">
-        <div class="row"><span>Subtotal</span><span>${money(q.subtotal, c.currency)}</span></div>
-        <div class="row"><span>Tax (${q.tax_rate}%)</span><span>${money(q.tax_amount, c.currency)}</span></div>
-        <div class="row grand"><span>Total</span><span>${money(q.total, c.currency)}</span></div>
-      </div>
-
-      ${q.notes ? `<div class="notes"><strong>Notes:</strong> ${escapeHtml(q.notes)}</div>` : ''}
-
-      <div class="bank-box">
-        <b>Payment details</b><br/>
-        ${c.bank_name ? `Bank: ${escapeHtml(c.bank_name)}<br/>` : ''}
-        ${c.bank_account_name ? `Account name: ${escapeHtml(c.bank_account_name)}<br/>` : ''}
-        ${c.bank_account_number ? `Account number: ${escapeHtml(c.bank_account_number)}<br/>` : ''}
-        ${c.bank_branch ? `Branch: ${escapeHtml(c.bank_branch)}<br/>` : ''}
-        ${c.bank_swift ? `SWIFT/Routing: ${escapeHtml(c.bank_swift)}<br/>` : ''}
-      </div>
-    </div>
-    <p class="device-note" style="text-align:center; margin-top:14px">Created from <b>${escapeHtml(q.created_by_device || 'unknown device')}</b></p>
-  `;
-
-  document.getElementById('backDash').onclick = () => go('dashboard', { companyId: c.id });
-  document.getElementById('printBtn').onclick = () => window.print();
+async function startApp() {
+  document.querySelector('.app').innerHTML = APP_SHELL_HTML;
+  await bootstrap();
 }
 
-render();
+async function boot() {
+  try {
+    const me = await api('GET', '/api/auth/me');
+    if (me.user) { state.user = me.user; await startApp(); }
+    else renderLogin();
+  } catch (err) {
+    renderLogin(err.message);
+  }
+}
+
+boot();

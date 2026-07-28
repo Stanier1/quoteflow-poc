@@ -1,28 +1,61 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>QuoteFlow — Multi-Company Quotation System (POC)</title>
-<link rel="stylesheet" href="styles.css" />
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#111111" />
+  <title>QuoteFlow — Quotations</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;900&display=swap" />
+  <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
+  <div class="app">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark">Q</div>
+        <div class="brand-name">QuoteFlow</div>
+      </div>
 
-<div class="topbar">
-  <div class="brand" id="brandHome" style="cursor:pointer">
-    <div class="bulb">Q</div>
-    <div>
-      QuoteFlow
-      <small>Multi-Company Quotation System</small>
-    </div>
+      <div class="field">
+        <label class="eyebrow" for="companyPicker">Company</label>
+        <select id="companyPicker" class="input strong"></select>
+      </div>
+
+      <nav class="sidenav" id="sidenav"></nav>
+
+      <div class="sync-card">
+        <div class="sync-head"><span class="dot green"></span><span>Sequence synced</span></div>
+        <p>Numbers are issued by the server, not the device — so a quote raised on a phone in the field continues the same sequence.</p>
+      </div>
+
+      <div class="row" style="justify-content:space-between;align-items:center">
+        <div id="userCard"></div>
+        <button class="btn ghost" data-logout>Logout</button>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <div class="topbar-titles">
+          <div class="eyebrow accent" id="topCompany">—</div>
+          <h1 id="topTitle">Quotes</h1>
+        </div>
+        <div class="topbar-actions">
+          <div class="pill tint" id="nextPill">Next: —</div>
+          <select id="companyPickerMobile" class="input compact"></select>
+          <button class="btn ghost" data-logout>Logout</button>
+        </div>
+      </header>
+
+      <div class="content" id="content"></div>
+
+      <nav class="tabbar" id="tabbar"></nav>
+    </main>
   </div>
-  <div class="nav-actions" id="navActions"></div>
-</div>
 
-<div class="container" id="app"></div>
-
-<div class="footer-note">Proof of concept for <span class="accent">quote numbering continuity</span> across devices — built on a shared server-side counter, not local device storage.</div>
-
-<script src="app.js"></script>
+  <div class="toast" id="toast" hidden></div>
+  <script src="app.js"></script>
 </body>
 </html>

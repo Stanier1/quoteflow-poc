@@ -1,89 +1,111 @@
-# QuoteFlow — Multi-Company Quotation System (Proof of Concept)
+# QuoteFlow — multi-company web quotation system (POC)
 
-A working proof of concept for a web-based quotation system, themed on Zano Systems'
-dark/violet visual identity. Built to demonstrate the two hard requirements before any
-further investment: **shared quote-number continuity across devices** and **multi-company
-branding**.
+A small Node/Express app. Quote numbers are issued **by the server**, so a quote
+raised on a phone in the field continues the same sequence as the office laptop:
+5 quotes exist → the 6th, from any device, is number 6.
 
-## What this proves
+## Demo credentials
 
-1. **Quote numbers never reset or collide across devices.** The counter lives on the
-   server's database, on the company record — not in the browser. If someone in the
-   office creates quotes 1–5, and a completely different phone that has never opened
-   the app before creates the next one, it is issued number 6. This was tested directly
-   (see "Continuity test" below) and works because the number is assigned in one atomic
-   database transaction at the moment "Create quote" is pressed, not by the device.
+Sign-in is required. Two seeded accounts, for local testing only:
 
-2. **Each company is fully self-contained.** Name, address, logo, bank details, currency,
-   default tax rate, quote-number prefix, and even a brand accent colour are all stored
-   per company. The printable quote document pulls its layout and branding from whichever
-   company it belongs to, so two companies in the same system never look alike or share
-   a numbering sequence.
+| Email                    | Password  | Role  | Can do                                    |
+| ------------------------- | --------- | ----- | ------------------------------------------ |
+| `admin@quoteflow.demo`    | `admin123`| admin | Everything — manage companies, quotes, users' activity |
+| `staff@quoteflow.demo`    | `staff123`| staff | Create & view quotes; companies are read-only |
 
-3. **Responsive on phone and desktop.** Single set of HTML/CSS/JS, no separate mobile app,
-   works in any modern browser.
+Rotate or replace these before any real deployment.
 
-## Continuity test (already run once, reproducible)
+## What's in the POC
 
-With the server running, five quotes were created back to back (simulating in-office use),
-then a sixth was created from a separate "device label" simulating an off-site phone:
+- **Continuous numbering** — the server reserves the next number when a draft is
+  started (held 30 min, released if abandoned), so two people quoting at the same
+  time can't collide or duplicate.
+- **Real database** — [libSQL](https://turso.tech) via `@libsql/client`, the
+  same client Turso (hosted libSQL) uses in production. Runs against a local
+  SQLite file out of the box (`data/quoteflow.db`, zero cloud account needed);
+  point it at a real Turso database later by setting `TURSO_DATABASE_URL` and
+  `TURSO_AUTH_TOKEN` — no schema or query changes required.
+- **Authentication & access levels** — cookie-based sessions, scrypt-hashed
+  passwords, two roles (`admin` / `staff`). Company management (create,
+  deactivate, delete, logo, banking/VAT details) is admin-only, enforced both
+  in the UI and on the server (403 if bypassed). Quote creation is open to any
+  signed-in user.
+- **Audit trail** — a dedicated `audit_log` table (not derived from quotes)
+  records every login/logout, company change, and quote create/status-change
+  with who, what, and when. Viewable on the Activity tab.
+- **Multiple companies** — each with its own name, address, VAT/reg number,
+  banking details, terms, footer, currency, VAT rate, number format (prefix +
+  digit padding), logo, and **quote layout** (gradient band / classic / minimal).
+  Admins can add, edit, deactivate/reactivate, or delete (if it has no quotes yet)
+  a company — all saved server-side so every device sees it.
+- **Responsive by viewport** — mobile browsers get the stacked layout with a
+  bottom tab bar; desktop browsers get the sidebar layout. Pure CSS media
+  queries, no device sniffing, same URL.
+- **Print / save PDF** — the quote document has print styles (A4 margins,
+  chrome hidden).
 
-```
-ACM-0001 | Office Desktop   | Client A
-ACM-0002 | Office Desktop   | Client B
-ACM-0003 | Front Desk PC    | Client C
-ACM-0004 | Office Desktop   | Client D
-ACM-0005 | Front Desk PC    | Client E
-ACM-0006 | Mobile - Off Site| Client F (off-site)   <-- continues correctly, no reset
-```
-
-In the actual product, "device label" would just be whichever phone/laptop is logged in —
-it's exposed in this POC's top bar purely so you can demo the continuity live (open two
-browser tabs or an incognito window, set one to "Mobile — Off Site", and create quotes
-from both to watch the numbers interleave correctly).
-
-## Running it
-
-Requires Node.js 22.5 or newer (uses Node's built-in SQLite; no external database to install).
+## Run it locally
 
 ```bash
 npm install
-npm run seed      # creates two demo companies with sample branding/banking info
-npm start         # starts the server on http://localhost:4000
+npm run dev        # or: npm start
 ```
 
-Open `http://localhost:4000` in a browser (or on a phone on the same network, using the
-machine's IP instead of localhost) — the layout adapts automatically.
+Open http://localhost:3000 and sign in with one of the demo accounts above.
 
-## What's real vs. what's simulated in this POC
+To try the mobile view on your phone while developing, find your machine's LAN
+IP (`ipconfig` / `ifconfig`) and open `http://<your-ip>:3000` on the phone —
+both devices then share the same number sequence, which is the whole point.
 
-- **Real:** the database, the atomic quote-number counter, company branding/storage,
-  quote creation, totals/tax calculation, the printable quote view (Print → Save as PDF).
-- **Simulated for the demo:** the "device label" picker in the top bar. In production this
-  would simply be "whichever user is logged in on whichever device," with no manual picker —
-  it's here only so the continuity behaviour is visible and demonstrable in one browser.
-- **Not yet built (next phase, if this POC is approved):** user accounts/login and
-  permissions, sending quotes by email, e-signature/acceptance flow, converting an accepted
-  quote to an invoice, and hosting it somewhere with a real domain (this POC runs locally;
-  going live means deploying it to a small cloud server so it's reachable from any device
-  anywhere, not just one machine).
+## Deploy to Railway
 
-## Design
+1. Push this repo to GitHub.
+2. Railway → **New Project → Deploy from GitHub repo** → pick the repo.
+3. Railway auto-detects Node and runs `npm start`. No build command needed.
+   It injects `PORT`; the server already uses it.
+4. Settings → **Networking → Generate Domain** to get a public URL.
 
-Colour palette, dark theme, and typography are modelled on zanosystems.com (near-black
-background, violet accent `#8B5CF6`, bold serif headlines, uppercase tracked labels,
-outlined buttons). Each company can still set its own accent colour so its quotes look
-like its own brand, not Zano's.
+### Database
 
-## File structure
+By default the app opens a local SQLite file at `data/quoteflow.db`. Railway's
+container filesystem is ephemeral, so for a persistent demo either:
+
+- Add a **Volume** (Service → Data → Add Volume), mount it at `/data`, and set
+  `DATA_DIR=/data`; or
+- Point at a real [Turso](https://turso.tech) database instead — create one,
+  then set `TURSO_DATABASE_URL` and `TURSO_AUTH_TOKEN` as environment
+  variables. No code changes needed; `db.js` picks them up automatically.
+
+## Files
 
 ```
-quotepoc/
-  server.js        Express server + REST API + the atomic quote-numbering logic
-  db.js            SQLite schema (companies, quotes, quote_items)
-  seed.js           Demo data
-  public/
-    index.html
-    styles.css
-    app.js         Entire frontend (no framework, no build step)
+server.js          Express API, auth/session middleware, number reservation logic
+db.js              Database layer (libSQL/Turso), schema migration, seeding, audit()
+seed.json          Demo companies and quotes, loaded on first boot if the DB is empty
+public/index.html  App shell
+public/styles.css  Design-system styling + responsive/print rules
+public/app.js      Front end (vanilla JS, no build step) — login, quotes, companies, activity
 ```
+
+## API
+
+| Method | Route                 | Auth        | Purpose                                    |
+| ------ | --------------------- | ----------- | ------------------------------------------- |
+| POST   | `/api/auth/login`     | —           | sign in, sets session cookie                |
+| POST   | `/api/auth/logout`    | signed in   | end session                                 |
+| GET    | `/api/auth/me`        | —           | current user, or `{user: null}`             |
+| GET    | `/api/bootstrap`      | signed in   | companies, quotes, next number per company  |
+| POST   | `/api/reserve`        | signed in   | reserve the next number for a draft         |
+| POST   | `/api/release`        | signed in   | release an abandoned reservation            |
+| POST   | `/api/quotes`         | signed in   | save a quote against a reservation          |
+| PATCH  | `/api/quotes/:id`     | signed in   | change status                               |
+| POST   | `/api/companies`      | admin       | create a company                            |
+| PUT    | `/api/companies/:id`  | admin       | edit details / layout / numbering / active  |
+| DELETE | `/api/companies/:id`  | admin       | delete (only if it has zero quotes)         |
+| GET    | `/api/audit`          | signed in   | last 200 audit trail entries                |
+
+## Not in the POC (deliberately)
+
+Quote → invoice conversion, PDF emailing, client database, attachments,
+multi-currency FX, approval workflow, and self-service signup (accounts are
+seeded, not registered).
