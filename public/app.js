@@ -30,6 +30,12 @@ function freshCompanyDraft() {
 const el = id => document.getElementById(id);
 const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
+function deviceIcon(device) {
+  const isMobile = device === 'mobile';
+  const label = isMobile ? 'Raised from a phone' : 'Raised from a computer';
+  return `<span class="device-ico" title="${label}" aria-label="${label}">${isMobile ? ICONS.mobile : ICONS.desktop}</span>`;
+}
+
 function isMobileDevice() {
   return window.matchMedia('(max-width: 719px)').matches ||
     (navigator.maxTouchPoints > 1 && window.matchMedia('(pointer: coarse)').matches);
@@ -102,14 +108,24 @@ async function releaseNumber() {
 /* ----------------------------------------------------------------- chrome */
 
 // Company management and the audit trail are admin-only screens. Staff's
+const ICONS = {
+  quotes: `<svg viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M5.5 2.5h6l3 3v11a1 1 0 0 1-1 1h-8a1 1 0 0 1-1-1v-13a1 1 0 0 1 1-1Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M11.5 2.5v3h3M7.5 10.5h5M7.5 13.5h5M7.5 7.5h2" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
+  new: `<svg viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M10 4.5v11M4.5 10h11" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>`,
+  companies: `<svg viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M3.5 17V4.5a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1V17M11.5 17V8.5a1 1 0 0 1 1-1h3a1 1 0 0 1 1 1V17M3 17h14" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"/><path d="M6 7.5h1.5M6 10.5h1.5M6 13.5h1.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>`,
+  activity: `<svg viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="10" cy="10" r="7" stroke="currentColor" stroke-width="1.6"/><path d="M10 6v4l2.6 2.2" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
+  mobile: `<svg viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg"><rect x="6" y="2.5" width="8" height="15" rx="1.5" stroke="currentColor" stroke-width="1.5"/><path d="M9 14.5h2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>`,
+  desktop: `<svg viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg"><rect x="2.5" y="3.5" width="15" height="10" rx="1.2" stroke="currentColor" stroke-width="1.5"/><path d="M7 17h6M10 13.5V17" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>`,
+  key: `<svg viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="7" cy="13" r="3" stroke="currentColor" stroke-width="1.5"/><path d="M9.2 10.8 15.5 4.5M13 7l1.8 1.8M15 5l1.8 1.8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>`
+};
+
 // nav is deliberately just Quotes (view + toggle status) and New (create) —
 // company data (banking, VAT, addresses, logos) never renders for them
 // outside of a quote they're actively working with.
 const NAV = [
-  { key: 'quotes', label: 'Quotes', icon: '📄' },
-  { key: 'new', label: 'New', icon: '✚' },
-  { key: 'companies', label: 'Companies', icon: '🏢', roles: ['admin'] },
-  { key: 'activity', label: 'Activity', icon: '🕑', roles: ['admin'] }
+  { key: 'quotes', label: 'Quotes', icon: ICONS.quotes },
+  { key: 'new', label: 'New', icon: ICONS.new },
+  { key: 'companies', label: 'Companies', icon: ICONS.companies, roles: ['admin'] },
+  { key: 'activity', label: 'Activity', icon: ICONS.activity, roles: ['admin'] }
 ];
 const GATED_SCREENS = { companies: 'admin', 'company-new': 'admin', 'company-detail': 'admin', activity: 'admin' };
 const visibleNav = () => NAV.filter(n => !n.roles || (state.user && n.roles.includes(state.user.role)));
@@ -138,7 +154,6 @@ function renderChrome() {
     companies: 'Companies & branding', 'company-new': 'Add a company',
     'company-detail': 'Company details', activity: 'Audit trail'
   }[state.screen];
-  el('nextPill').innerHTML = `<span class="dot"></span>Next: ${esc(state.next[state.companyId] || '—')}`;
 
   if (el('userCard') && state.user) {
     el('userCard').innerHTML = `
@@ -194,7 +209,7 @@ function viewQuotes() {
 
   const stats = [
     ['Quotes issued', String(mine.length), 'this company, all devices'],
-    ['Next number', state.next[co.id] || '—', 'server-issued, no gaps'],
+    ['Next number', state.next[co.id] || '—', 'assigned automatically, never skipped'],
     ['Pipeline value', money(value), 'incl. VAT'],
     ['From mobile', `${mobileCount}/${mine.length}`, 'raised off-site']
   ].map(([l, v, s]) => `<div class="card stat"><div class="eyebrow">${l}</div><div class="stat-value">${esc(v)}</div><div class="stat-sub">${s}</div></div>`).join('');
@@ -211,7 +226,7 @@ function viewQuotes() {
       </span>
       <span class="quote-row-side">
         <span class="quote-total">${money(t.grand)}</span>
-        <span class="quote-meta">${q.device === 'mobile' ? '📱' : '💻'} ${fmtDate(q.createdAt)}</span>
+        <span class="quote-meta">${deviceIcon(q.device)}${fmtDate(q.createdAt)}</span>
       </span>
     </button>`;
   }).join('') : `<div class="card-pad muted">No quotes yet for this company.</div>`;
@@ -224,10 +239,6 @@ function viewQuotes() {
         <button class="btn primary" data-go="new">New quote</button>
       </div>
       ${rows}
-    </div>
-    <div class="card card-pad stack" style="gap:8px">
-      <div class="eyebrow accent">How continuity works</div>
-      <p class="muted">The number never lives on the phone or the laptop. When anyone starts a quote, this server hands out the next number in that company's sequence and holds it for 30 minutes while the quote is drafted — so two people quoting at the same time can't collide, and an abandoned draft releases its number. ${esc(co.short)} has ${mine.length} quotes, so the next one — from any device, anywhere — is <strong style="color:var(--black)">${esc(state.next[co.id])}</strong>.</p>
     </div>`;
 }
 
@@ -260,7 +271,7 @@ function viewNew() {
         <div class="stat-value" style="font-size:26px">${esc(r ? r.number : '…')}</div>
       </div>
       <div class="stack" style="gap:5px;align-items:flex-start">
-        <div class="pill tint">${isMobileDevice() ? '📱' : '💻'} Drafting on ${isMobileDevice() ? 'mobile' : 'desktop'}</div>
+        <div class="pill tint">${deviceIcon(isMobileDevice() ? 'mobile' : 'desktop')}Drafting on ${isMobileDevice() ? 'mobile' : 'desktop'}</div>
         <div class="stat-sub">Held for 30 min · released if abandoned</div>
       </div>
     </div>
@@ -600,7 +611,11 @@ const AUDIT_LABEL = {
   'auth.login': a => `${a.actorEmail} signed in`,
   'auth.logout': a => `${a.actorEmail} signed out`
 };
-const AUDIT_ICON = a => a.action.startsWith('auth') ? '🔑' : a.action.startsWith('company') ? '🏢' : (a.device === 'mobile' ? '📱' : '💻');
+const AUDIT_ICON = a => a.action.startsWith('auth')
+  ? `<span class="ico" title="Sign-in event">${ICONS.key}</span>`
+  : a.action.startsWith('company')
+    ? `<span class="ico" title="Company change">${ICONS.companies}</span>`
+    : deviceIcon(a.device);
 
 function viewActivity() {
   const rows = (state.auditLog || []).map(a => `<div class="activity-row">
@@ -850,24 +865,56 @@ const APP_SHELL_HTML = document.querySelector('.app').innerHTML;
 
 function renderLogin(error) {
   document.querySelector('.app').innerHTML = `
-    <div style="min-height:100dvh;width:100%;display:flex;align-items:center;justify-content:center;padding:24px">
-      <div class="card card-pad stack" style="width:100%;max-width:360px">
-        <div class="stack" style="gap:6px;align-items:center;text-align:center">
-          <div class="brand-mark" style="width:40px;height:40px;border-radius:11px;background:var(--gradient);color:#fff;display:grid;place-items:center;font-weight:900">Q</div>
-          <div class="card-title" style="font-size:18px">Sign in to QuoteFlow</div>
-          <div class="stat-sub">Companies, quotes and numbering are shared across every signed-in device.</div>
+    <div class="login-wrapper">
+      <div class="ambient-glow glow-1"></div>
+      <div class="ambient-glow glow-2"></div>
+
+      <div class="login-container glass-panel">
+        <div class="brand-panel">
+          <div class="brand-content glass-card">
+            <span class="accent-badge">Welcome Back</span>
+            <h1>Manage your quotes seamlessly.</h1>
+            <p>Companies, quotes and numbering are shared across every signed-in device.</p>
+          </div>
         </div>
-        <label class="field"><span class="field-label">Email</span>
-          <input class="input" id="loginEmail" type="email" placeholder="admin@quoteflow.demo" /></label>
-        <label class="field"><span class="field-label">Password</span>
-          <input class="input" id="loginPassword" type="password" placeholder="••••••••" /></label>
-        ${error ? `<p style="color:#B91C1C;font-size:13px">${esc(error)}</p>` : ''}
-        <button class="btn primary block" id="loginSubmit">Sign in</button>
-        <div class="stat-sub" style="text-align:center;line-height:1.6">Demo accounts (local test data) —<br/>admin@quoteflow.demo / admin123 (full access)<br/>staff@quoteflow.demo / staff123 (quotes only)</div>
+
+        <div class="form-panel">
+          <div class="form-wrapper">
+            <div class="form-header">
+              <h2>Log In</h2>
+              <p class="subtitle">Enter your credentials to access your account.</p>
+            </div>
+
+            <form class="login-form" id="loginForm">
+              <div class="field">
+                <label class="field-label" for="loginEmail">Email address</label>
+                <input type="email" id="loginEmail" class="input" placeholder="admin@quoteflow.demo" required />
+              </div>
+
+              <div class="field">
+                <div class="label-row">
+                  <label class="field-label" for="loginPassword">Password</label>
+                  <a href="#" class="forgot-link" data-forgot>Forgot password?</a>
+                </div>
+                <input type="password" id="loginPassword" class="input" placeholder="••••••••" required />
+              </div>
+
+              ${error ? `<p style="color:#B91C1C;font-size:13px">${esc(error)}</p>` : ''}
+
+              <button type="submit" class="btn primary block" id="loginSubmit">Sign in</button>
+            </form>
+
+            <footer class="form-footer">
+              <p>Demo accounts (local test data) —<br/>admin@quoteflow.demo / admin123 (full access)<br/>staff@quoteflow.demo / staff123 (quotes only)</p>
+            </footer>
+          </div>
+        </div>
       </div>
     </div>`;
 
-  const submit = async () => {
+  const form = el('loginForm');
+  const submit = async (e) => {
+    e.preventDefault();
     const email = el('loginEmail').value.trim();
     const password = el('loginPassword').value;
     el('loginSubmit').disabled = true;
@@ -879,8 +926,11 @@ function renderLogin(error) {
       renderLogin(err.message);
     }
   };
-  el('loginSubmit').onclick = submit;
-  el('loginPassword').addEventListener('keydown', e => { if (e.key === 'Enter') submit(); });
+  form.addEventListener('submit', submit);
+  document.querySelector('[data-forgot]').addEventListener('click', e => {
+    e.preventDefault();
+    toast('Contact your administrator to reset your password');
+  });
 }
 
 async function startApp() {
