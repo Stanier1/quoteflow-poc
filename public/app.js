@@ -23,8 +23,32 @@ function freshCompanyDraft() {
   return {
     name: '', short: '', initials: '', tagline: '', prefix: '', pad: 4,
     currency: '$', vatRate: 15, validDays: 30, address: '', vatNo: '', regNo: '',
-    banking: '', terms: '', footer: '', layout: 'band', logoDataUrl: null
+    banking: '', terms: '', footer: '', layout: 'band', logoDataUrl: null, themeColor: '#408E21'
   };
+}
+
+/* ------------------------------------------------------------- theming */
+
+function hexToRgbTriplet(hex) {
+  const m = String(hex || '').replace('#', '').match(/^([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i);
+  if (!m) return '64, 142, 33';
+  return [1, 2, 3].map(i => parseInt(m[i], 16)).join(', ');
+}
+
+function shadeHex(hex, percent) {
+  const m = String(hex || '').replace('#', '').match(/^([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i);
+  if (!m) return hex;
+  const clamp = v => Math.max(0, Math.min(255, Math.round(v)));
+  const [r, g, b] = [1, 2, 3].map(i => parseInt(m[i], 16) * (1 - percent));
+  return '#' + [r, g, b].map(v => clamp(v).toString(16).padStart(2, '0')).join('');
+}
+
+function applyCompanyTheme(co) {
+  const color = (co && co.themeColor) || '#408E21';
+  const root = document.documentElement.style;
+  root.setProperty('--brand-green', color);
+  root.setProperty('--brand-green-hover', shadeHex(color, 0.18));
+  root.setProperty('--brand-green-rgb', hexToRgbTriplet(color));
 }
 
 const el = id => document.getElementById(id);
@@ -86,6 +110,7 @@ async function bootstrap() {
     const firstActive = state.companies.find(c => c.active !== false);
     state.companyId = firstActive ? firstActive.id : (state.companies[0] && state.companies[0].id);
   }
+  applyCompanyTheme(company());
   renderChrome();
   render();
 }
@@ -506,6 +531,8 @@ function viewCompanyDetail() {
             ${[['band', 'Gradient band'], ['classic', 'Classic bordered'], ['minimal', 'Minimal typographic']]
               .map(([v, l]) => `<option value="${v}" ${c.layout === v ? 'selected' : ''}>${l}</option>`).join('')}
           </select></label>
+        <label class="field"><span class="field-label">Brand colour</span>
+          <input class="input" type="color" value="${esc(c.themeColor || '#408E21')}" data-co="${c.id}" data-field="themeColor" style="padding:4px;height:42px" /></label>
       </div>
 
       <label class="field"><span class="field-label">Address</span>
@@ -569,6 +596,8 @@ function viewCompanyNew() {
             ${[['band', 'Gradient band'], ['classic', 'Classic bordered'], ['minimal', 'Minimal typographic']]
               .map(([v, l]) => `<option value="${v}" ${d.layout === v ? 'selected' : ''}>${l}</option>`).join('')}
           </select></label>
+        <label class="field"><span class="field-label">Brand colour</span>
+          <input class="input" type="color" value="${esc(d.themeColor)}" data-newco="themeColor" style="padding:4px;height:42px" /></label>
       </div>
       <label class="field"><span class="field-label">Address</span>
         <textarea class="input" data-newco="address">${esc(d.address)}</textarea></label>
@@ -662,6 +691,7 @@ document.addEventListener('click', async e => {
 
   if (t.dataset.select) {
     state.companyId = t.dataset.select;
+    applyCompanyTheme(company());
     return go('quotes');
   }
 
@@ -676,6 +706,7 @@ document.addEventListener('click', async e => {
       Object.assign(company(id), out.company);
       delete state.companyLogoEdits[id];
       state.next[id] = out.next;
+      if (id === state.companyId) applyCompanyTheme(company());
       renderChrome(); render();
       toast(out.company.short + ' details saved for every device');
     } catch (err) { toast('Could not save: ' + err.message); }
@@ -693,7 +724,7 @@ document.addEventListener('click', async e => {
       Object.assign(co, out.company);
       if (!nextActiveState && state.companyId === id) {
         const fallback = state.companies.find(c2 => c2.id !== id && c2.active !== false);
-        if (fallback) state.companyId = fallback.id;
+        if (fallback) { state.companyId = fallback.id; applyCompanyTheme(company()); }
       }
       renderChrome(); render();
       toast(`${co.short} ${nextActiveState ? 'reactivated' : 'deactivated'}`);
@@ -741,6 +772,7 @@ document.addEventListener('click', async e => {
       if (state.companyId === id) {
         const fallback = state.companies.find(c2 => c2.active !== false) || state.companies[0];
         state.companyId = fallback ? fallback.id : null;
+        applyCompanyTheme(company());
       }
       state.deleteConfirm = null;
       if (state.editingCompanyId === id) state.screen = 'companies';
@@ -762,6 +794,7 @@ document.addEventListener('click', async e => {
       state.next[out.company.id] = out.next;
       state.companyId = out.company.id;
       state.screen = 'quotes';
+      applyCompanyTheme(company());
       renderChrome(); render(); window.scrollTo(0, 0);
       toast(`${out.company.name} added — first quote will be ${out.next}`);
     } catch (err) { toast('Could not create company: ' + err.message); }
@@ -826,6 +859,7 @@ document.addEventListener('change', async e => {
     if (state.screen === 'new') await releaseNumber();
     state.companyId = f.value;
     state.openId = null;
+    applyCompanyTheme(company());
     return go(state.screen === 'quote' ? 'quotes' : state.screen);
   }
   if (f.dataset.logoupload !== undefined) {

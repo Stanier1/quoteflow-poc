@@ -17,7 +17,8 @@
       "regNo": "2016/447120/07",
       "banking": "FNB Business Cheque\nAcc 6244 118 9032\nBranch 250655\nRef: quote number",
       "terms": "Valid 30 days. 50% deposit on acceptance, balance on completion. Prices exclude after-hours labour.",
-      "footer": "Northline Electrical (Pty) Ltd · accounts@northline.co.za · 011 555 0142"
+      "footer": "Northline Electrical (Pty) Ltd · accounts@northline.co.za · 011 555 0142",
+      "themeColor": "#408E21"
     },
     {
       "id": "ns",
@@ -36,7 +37,8 @@
       "regNo": "2016/447120/07",
       "banking": "Standard Bank Business\nAcc 0521 447 883\nBranch 051001\nRef: site name",
       "terms": "Valid 14 days — panel pricing is import-linked. 60% on order, 40% pre-commissioning.",
-      "footer": "Northline Solar · A division of Northline Group · solar@northline.co.za · 011 555 0149"
+      "footer": "Northline Solar · A division of Northline Group · solar@northline.co.za · 011 555 0149",
+      "themeColor": "#F59E0B"
     },
     {
       "id": "vi",
@@ -55,7 +57,8 @@
       "regNo": "2019/118004/07",
       "banking": "Nedbank Current\nAcc 1188 099 224\nBranch 198765\nRef: client surname",
       "terms": "Valid 30 days. Measurements to be confirmed on site before manufacture.",
-      "footer": "Vantage Interiors · studio@vantageinteriors.co.za · 021 447 8810"
+      "footer": "Vantage Interiors · studio@vantageinteriors.co.za · 021 447 8810",
+      "themeColor": "#7C3AED"
     }
   ],
   "quotes": [

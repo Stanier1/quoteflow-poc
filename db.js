@@ -39,7 +39,8 @@ async function migrate() {
       terms TEXT NOT NULL DEFAULT '',
       footer TEXT NOT NULL DEFAULT '',
       logoDataUrl TEXT,
-      active INTEGER NOT NULL DEFAULT 1
+      active INTEGER NOT NULL DEFAULT 1,
+      themeColor TEXT NOT NULL DEFAULT '#408E21'
     );
 
     CREATE TABLE IF NOT EXISTS quotes (
@@ -88,6 +89,14 @@ async function migrate() {
       device TEXT
     );
   `);
+
+  // themeColor was added after the initial schema — bring existing databases
+  // up to date since CREATE TABLE IF NOT EXISTS is a no-op once the table exists.
+  try {
+    await db.execute(`ALTER TABLE companies ADD COLUMN themeColor TEXT NOT NULL DEFAULT '#408E21'`);
+  } catch (err) {
+    if (!/duplicate column/i.test(err.message)) throw err;
+  }
 }
 
 function hashPassword(password, salt = crypto.randomBytes(16).toString('hex')) {
@@ -112,10 +121,11 @@ async function seedIfEmpty() {
     await db.execute({
       sql: `INSERT INTO companies
         (id, name, short, initials, tagline, layout, prefix, pad, currency, vatRate, validDays,
-         address, vatNo, regNo, banking, terms, footer, logoDataUrl, active)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1)`,
+         address, vatNo, regNo, banking, terms, footer, logoDataUrl, active, themeColor)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?)`,
       args: [c.id, c.name, c.short, c.initials, c.tagline, c.layout, c.prefix, c.pad,
-        c.currency, c.vatRate, c.validDays, c.address, c.vatNo, c.regNo, c.banking, c.terms, c.footer, null]
+        c.currency, c.vatRate, c.validDays, c.address, c.vatNo, c.regNo, c.banking, c.terms, c.footer, null,
+        c.themeColor || '#408E21']
     });
   }
 

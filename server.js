@@ -100,6 +100,10 @@ function rowToQuote(row) {
   return { ...row, items: JSON.parse(row.itemsJson || '[]'), reissued: !!row.reissued, itemsJson: undefined };
 }
 
+function sanitizeHexColor(value, fallback) {
+  return /^#[0-9a-fA-F]{6}$/.test(String(value || '')) ? value : fallback;
+}
+
 function slugify(name) {
   return String(name).toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
 }
@@ -214,13 +218,14 @@ app.post('/api/companies', requireRole('admin'), async (req, res) => {
     banking: String(b.banking || '').trim(),
     terms: String(b.terms || '').trim(),
     footer: String(b.footer || '').trim(),
-    logoDataUrl: b.logoDataUrl || null
+    logoDataUrl: b.logoDataUrl || null,
+    themeColor: sanitizeHexColor(b.themeColor, '#408E21')
   };
   await db.execute({
-    sql: `INSERT INTO companies (id,name,short,initials,tagline,layout,prefix,pad,currency,vatRate,validDays,address,vatNo,regNo,banking,terms,footer,logoDataUrl,active)
-          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1)`,
+    sql: `INSERT INTO companies (id,name,short,initials,tagline,layout,prefix,pad,currency,vatRate,validDays,address,vatNo,regNo,banking,terms,footer,logoDataUrl,active,themeColor)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?)`,
     args: [co.id, co.name, co.short, co.initials, co.tagline, co.layout, co.prefix, co.pad, co.currency,
-      co.vatRate, co.validDays, co.address, co.vatNo, co.regNo, co.banking, co.terms, co.footer, co.logoDataUrl]
+      co.vatRate, co.validDays, co.address, co.vatNo, co.regNo, co.banking, co.terms, co.footer, co.logoDataUrl, co.themeColor]
   });
   await audit({ actorEmail: req.user.email, actorRole: req.user.role, action: 'company.create', targetType: 'company', targetId: co.id, details: { name: co.name } });
   const saved = await getCompany(co.id);
@@ -238,16 +243,17 @@ app.put('/api/companies/:id', requireRole('admin'), async (req, res) => {
     if (req.body[k] !== undefined && req.body[k] !== null) merged[k] = req.body[k];
   });
   if ('logoDataUrl' in req.body) merged.logoDataUrl = req.body.logoDataUrl || null;
+  if ('themeColor' in req.body) merged.themeColor = sanitizeHexColor(req.body.themeColor, co.themeColor);
   merged.pad = Math.min(8, Math.max(1, Number(merged.pad) || 4));
   merged.vatRate = Number(merged.vatRate) || 0;
   merged.validDays = Number(merged.validDays) || 30;
 
   await db.execute({
     sql: `UPDATE companies SET name=?,short=?,initials=?,tagline=?,address=?,vatNo=?,regNo=?,banking=?,terms=?,footer=?,
-          prefix=?,pad=?,layout=?,currency=?,vatRate=?,validDays=?,logoDataUrl=?,active=? WHERE id=?`,
+          prefix=?,pad=?,layout=?,currency=?,vatRate=?,validDays=?,logoDataUrl=?,active=?,themeColor=? WHERE id=?`,
     args: [merged.name, merged.short, merged.initials, merged.tagline, merged.address, merged.vatNo, merged.regNo,
       merged.banking, merged.terms, merged.footer, merged.prefix, merged.pad, merged.layout, merged.currency,
-      merged.vatRate, merged.validDays, merged.logoDataUrl, merged.active ? 1 : 0, co.id]
+      merged.vatRate, merged.validDays, merged.logoDataUrl, merged.active ? 1 : 0, merged.themeColor, co.id]
   });
 
   let action = 'company.update';
